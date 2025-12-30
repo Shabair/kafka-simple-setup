@@ -1,0 +1,351 @@
+Here's a Docker Compose file for Kafka and a Node.js admin script to create topics:
+
+## 1. `docker-compose.yml`
+
+```yaml
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - kafka-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - kafka-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - kafka-network
+
+networks:
+  kafka-network:
+    driver: bridge
+```
+
+## 2. `admin.js` - Kafka Topic Admin Script
+
+```javascript
+const { Kafka, logLevel } = require('kafkajs');
+
+// Create Kafka instance
+const kafka = new Kafka({
+  clientId: 'kafka-admin',
+  brokers: ['localhost:9092'],
+  logLevel: logLevel.INFO,
+});
+
+// Create admin client
+const admin = kafka.admin();
+
+// Define topics to create
+const topics = [
+  {
+    topic: 'user-registrations',
+    numPartitions: 3,
+    replicationFactor: 1,
+    configEntries: [
+      { name: 'retention.ms', value: '604800000' }, // 7 days
+      { name: 'cleanup.policy', value: 'delete' },
+    ],
+  },
+  {
+    topic: 'order-events',
+    numPartitions: 5,
+    replicationFactor: 1,
+    configEntries: [
+      { name: 'retention.ms', value: '2592000000' }, // 30 days
+      { name: 'cleanup.policy', value: 'compact,delete' },
+    ],
+  },
+  {
+    topic: 'payment-transactions',
+    numPartitions: 2,
+    replicationFactor: 1,
+    configEntries: [
+      { name: 'retention.ms', value: '86400000' }, // 1 day
+    ],
+  },
+  {
+    topic: 'inventory-updates',
+    numPartitions: 3,
+    replicationFactor: 1,
+    configEntries: [
+      { name: 'retention.bytes', value: '1073741824' }, // 1 GB
+    ],
+  },
+  {
+    topic: 'notification-events',
+    numPartitions: 2,
+    replicationFactor: 1,
+  },
+];
+
+async function createTopics() {
+  try {
+    console.log('Connecting to Kafka...');
+    await admin.connect();
+    console.log('Connected successfully!');
+
+    // Check if topics already exist
+    const existingTopics = await admin.listTopics();
+    console.log('Existing topics:', existingTopics);
+
+    // Filter out topics that don't exist yet
+    const topicsToCreate = topics.filter(
+      (topicConfig) => !existingTopics.includes(topicConfig.topic)
+    );
+
+    if (topicsToCreate.length === 0) {
+      console.log('All topics already exist.');
+      return;
+    }
+
+    console.log(`Creating ${topicsToCreate.length} topics...`);
+    
+    // Create topics
+    await admin.createTopics({
+      topics: topicsToCreate,
+      waitForLeaders: true,
+      timeout: 30000, // 30 seconds
+    });
+
+    console.log('Topics created successfully!');
+
+    // Verify topics were created
+    const metadata = await admin.fetchTopicMetadata({
+      topics: topics.map(t => t.topic),
+    });
+    
+    console.log('\nCreated Topics:');
+    metadata.topics.forEach((topic) => {
+      console.log(`- ${topic.name} (Partitions: ${topic.partitions.length})`);
+    });
+
+  } catch (error) {
+    console.error('Error creating topics:', error);
+  } finally {
+    await admin.disconnect();
+    console.log('Disconnected from Kafka.');
+  }
+}
+
+async function deleteTopic(topicName) {
+  try {
+    await admin.connect();
+    console.log(`Deleting topic: ${topicName}`);
+    
+    await admin.deleteTopics({
+      topics: [topicName],
+      timeout: 30000,
+    });
+    
+    console.log(`Topic "${topicName}" deleted successfully.`);
+  } catch (error) {
+    console.error(`Error deleting topic ${topicName}:`, error);
+  } finally {
+    await admin.disconnect();
+  }
+}
+
+async function listTopics() {
+  try {
+    await admin.connect();
+    const topics = await admin.listTopics();
+    
+    console.log('\nAll Topics:');
+    topics.forEach((topic, index) => {
+      console.log(`${index + 1}. ${topic}`);
+    });
+    
+    const metadata = await admin.fetchTopicMetadata();
+    console.log('\nTopic Details:');
+    metadata.topics.forEach((topic) => {
+      console.log(`\nTopic: ${topic.name}`);
+      console.log(`  Partitions: ${topic.partitions.length}`);
+      topic.partitions.forEach((partition) => {
+        console.log(`    Partition ${partition.partitionId}: Leader: ${partition.leader}`);
+      });
+    });
+  } catch (error) {
+    console.error('Error listing topics:', error);
+  } finally {
+    await admin.disconnect();
+  }
+}
+
+// CLI interface
+async function main() {
+  const command = process.argv[2];
+  
+  switch (command) {
+    case 'create':
+      await createTopics();
+      break;
+    case 'list':
+      await listTopics();
+      break;
+    case 'delete':
+      const topicName = process.argv[3];
+      if (!topicName) {
+        console.error('Please provide a topic name to delete');
+        process.exit(1);
+      }
+      await deleteTopic(topicName);
+      break;
+    default:
+      console.log(`
+Kafka Admin Tool
+Usage:
+  node admin.js create   - Create all predefined topics
+  node admin.js list     - List all topics
+  node admin.js delete <topicName> - Delete a specific topic
+  
+Example:
+  node admin.js create
+  node admin.js list
+  node admin.js delete user-registrations
+      `);
+  }
+}
+
+// Run if called directly
+if (require.main === module) {
+  main().catch(console.error);
+}
+
+module.exports = {
+  createTopics,
+  listTopics,
+  deleteTopic,
+  admin,
+  topics,
+};
+```
+
+## 3. `package.json`
+
+```json
+{
+  "name": "kafka-admin",
+  "version": "1.0.0",
+  "description": "Kafka topic administration tool",
+  "main": "admin.js",
+  "scripts": {
+    "start": "node admin.js create",
+    "create-topics": "node admin.js create",
+    "list-topics": "node admin.js list",
+    "delete-topic": "node admin.js delete",
+    "dev": "node -r dotenv/config admin.js"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "dotenv": "^16.3.1"
+  },
+  "keywords": ["kafka", "admin", "topics"],
+  "author": "",
+  "license": "MIT"
+}
+```
+
+## 4. `.env` (optional)
+
+```env
+KAFKA_BROKERS=localhost:9092
+KAFKA_CLIENT_ID=kafka-admin
+```
+
+## Setup Instructions:
+
+1. **Install dependencies:**
+```bash
+npm install
+```
+
+2. **Start Kafka services:**
+```bash
+docker-compose up -d
+```
+
+3. **Wait for Kafka to be ready (give it 30-60 seconds)**
+
+4. **Create topics:**
+```bash
+npm run create-topics
+# or
+node admin.js create
+```
+
+5. **List topics:**
+```bash
+npm run list-topics
+# or
+node admin.js list
+```
+
+6. **Access Kafka UI:**
+Open browser and go to: `http://localhost:8080`
+
+## Features:
+
+1. **Docker Compose includes:**
+   - Zookeeper
+   - Kafka broker
+   - Kafka UI for monitoring (optional)
+
+2. **Admin script features:**
+   - Create multiple topics with custom configurations
+   - List all existing topics
+   - Delete specific topics
+   - Error handling and connection management
+   - CLI interface for easy use
+
+3. **Preconfigured topics:**
+   - User registrations
+   - Order events
+   - Payment transactions
+   - Inventory updates
+   - Notification events
+
+You can modify the topic configurations in the `admin.js` file to match your requirements.
+
+
+
+
+link:
+https://chat.deepseek.com/share/3goszy01i3jq9i81jd

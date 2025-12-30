@@ -1,0 +1,22 @@
+{
+    "name": "kafka-admin",
+    "version": "1.0.0",
+    "description": "Kafka topic administration tool",
+    "main": "admin.js",
+    "scripts": {
+      "start": "node admin.js create",
+      "create-topics": "node admin.js create",
+      "list-topics": "node admin.js list",
+      "delete-topic": "node admin.js delete",
+      "dev": "node -r dotenv/config admin.js"
+    },
+    "dependencies": {
+      "kafkajs": "^2.2.4"
+    },
+    "devDependencies": {
+      "dotenv": "^16.3.1"
+    },
+    "keywords": ["kafka", "admin", "topics"],
+    "author": "",
+    "license": "MIT"
+  }
